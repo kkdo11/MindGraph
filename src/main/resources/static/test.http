@@ -1,0 +1,5 @@
+### 지식 추출 테스트
+POST http://localhost:8080/api/graph/extract
+Content-Type: text/plain
+
+Manus AI는 2026년에 설립된 인공지능 기업이며, 혁신적인 에이전트 기술을 개발하고 있다.
