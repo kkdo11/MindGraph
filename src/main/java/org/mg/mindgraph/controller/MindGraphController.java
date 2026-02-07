@@ -1,13 +1,9 @@
 package org.mg.mindgraph.controller;
 
 import lombok.RequiredArgsConstructor;
-import org.mg.mindgraph.ai.KnowledgeExtractor;
-import org.mg.mindgraph.dto.GraphData;
 import org.mg.mindgraph.dto.SearchResult;
-import org.mg.mindgraph.service.GraphService;
-import org.mg.mindgraph.service.MindGraphService; // 추가
-import org.mg.mindgraph.service.SearchService;
-import org.mg.mindgraph.service.VectorService;
+import org.mg.mindgraph.service.*;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -18,20 +14,19 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class MindGraphController {
 
-    private final KnowledgeExtractor knowledgeExtractor;
-    private final GraphService graphService;
-    private final VectorService vectorService;
     private final SearchService searchService;
     private final MindGraphService mindGraphService; // 오케스트레이터 주입
+    private final ExtractionPublisher extractionPublisher; // 비동기 추출 요청 발행자
 
-    // ... 기존 메서드들 (extractGraph, search) ...
-
+    /**
+     * 텍스트를 받아 비동기적으로 지식 그래프 추출 및 임베딩을 요청합니다.
+     * @param text 원본 텍스트
+     * @return 202 Accepted
+     */
     @PostMapping("/extract")
-    public GraphData extractGraph(@RequestBody String text) {
-        GraphData graphData = knowledgeExtractor.extract(text);
-        graphService.saveGraph(graphData);
-        vectorService.embedAndSave(text);
-        return graphData;
+    public ResponseEntity<Void> extractGraph(@RequestBody String text) {
+        extractionPublisher.publishExtractionRequest(text);
+        return ResponseEntity.accepted().build();
     }
 
     @GetMapping("/search")

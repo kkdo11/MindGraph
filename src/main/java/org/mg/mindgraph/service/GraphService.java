@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 @Slf4j
@@ -80,5 +81,25 @@ public class GraphService {
                          edgeDTO.sourceName(), edgeDTO.targetName());
             }
         }
+    }
+    @Transactional(readOnly = true)
+    public String getRelatedKnowledge(String keyword) {
+        List<Edge> edges = edgeRepository.findEdgesByNodeName(keyword);
+
+        if (edges.isEmpty()) {
+            return "";
+        }
+
+        StringBuilder knowledge = new StringBuilder();
+        knowledge.append(String.format("### '%s' 관련 지식 그래프:\n", keyword));
+
+        for (Edge edge : edges) {
+            knowledge.append(String.format("- %s(%s)은(는) %s(%s)와(과) '%s' 관계가 있습니다.\n",
+                    edge.getSource().getName(), edge.getSource().getType(),
+                    edge.getTarget().getName(), edge.getTarget().getType(),
+                    edge.getRelation()));
+        }
+
+        return knowledge.toString();
     }
 }
