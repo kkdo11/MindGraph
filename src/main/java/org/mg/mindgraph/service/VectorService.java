@@ -193,16 +193,12 @@ public class VectorService {
      * 텍스트의 마지막 문장을 추출합니다.
      */
     private String extractLastSentence(String text) {
-        // 마지막 문장부호 위치부터 역탐색
-        int end = text.length();
-        for (int i = end - 1; i >= 0; i--) {
+        for (int i = text.length() - 1; i >= 0; i--) {
             char c = text.charAt(i);
             if (c == '.' || c == '。' || c == '!' || c == '?' || c == '\n') {
-                // 이 문장부호 다음부터 끝까지가 마지막 문장
                 String candidate = text.substring(i + 1).strip();
                 if (!candidate.isEmpty()) return candidate;
-                // 빈 문자열이면 (텍스트가 문장부호로 끝남) — 그 앞 문장 찾기
-                end = i;
+                // 문장부호로 끝나는 경우 — 그 이전 문장을 찾기 위해 계속 탐색
             }
         }
         // 문장부호가 없으면 전체가 하나의 문장 — 너무 길면 포기

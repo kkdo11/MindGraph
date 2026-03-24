@@ -25,6 +25,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -199,14 +200,48 @@ public class MindGraphService {
      * <p>예: "Docker란?" → "Docker란? Docker: 컨테이너 가상화 기술..."
      * 짧은 질문과 긴 청크 사이의 구조적 유사도 저하(#10)를 완화합니다.
      */
+    /**
+     * [F-6b] 키워드로 찾은 노드의 description을 질문에 concat하여 벡터 검색 재현율을 높입니다.
+     * LLM 추가 호출 없이 기존 DB 데이터만 활용합니다.
+     *
+     * <p>1차: exact name match (findByNameIn) — 빠른 조회
+     * <p>2차: 매칭 안 된 키워드는 embedding similarity fallback — 언어 불일치 보완
+     * ("Docker" 키워드로 "도커" 노드를 찾거나, "도커" 키워드로 "Docker" 노드를 찾음)
+     */
     private String expandQuery(String question, List<String> keywords) {
         if (keywords.isEmpty()) return question;
 
         List<String> entityKeywords = keywords.stream().filter(k -> !k.matches("\\d{4}")).toList();
-        List<Node> nodes = nodeRepository.findByNameIn(entityKeywords);
+
+        // 1차: exact match
+        List<Node> exactNodes = nodeRepository.findByNameIn(entityKeywords);
+        Set<Long> foundIds = exactNodes.stream()
+                .map(Node::getId).filter(Objects::nonNull).collect(Collectors.toSet());
+        Set<String> matchedLower = exactNodes.stream()
+                .map(n -> n.getName().toLowerCase()).collect(Collectors.toSet());
+
+        // 2차: exact miss 키워드는 embedding similarity fallback
+        List<Node> allNodes = new ArrayList<>(exactNodes);
+        for (String kw : entityKeywords) {
+            if (!matchedLower.contains(kw.toLowerCase())) {
+                try {
+                    String vec = embeddingModel.embed(kw).content().vectorAsList().toString();
+                    nodeRepository.findSimilarByNameEmbedding(vec, 0.7, 1).stream()
+                            .filter(n -> n.getId() == null || !foundIds.contains(n.getId()))
+                            .findFirst()
+                            .ifPresent(n -> {
+                                allNodes.add(n);
+                                if (n.getId() != null) foundIds.add(n.getId());
+                                log.debug("Query expansion: '{}' → semantic match '{}'", kw, n.getName());
+                            });
+                } catch (Exception e) {
+                    log.warn("Query expansion semantic fallback failed for '{}': {}", kw, e.getMessage());
+                }
+            }
+        }
 
         StringBuilder expansion = new StringBuilder(question);
-        for (Node node : nodes) {
+        for (Node node : allNodes) {
             if (node.getDescription() != null && !node.getDescription().isBlank()) {
                 expansion.append(" ").append(node.getName()).append(": ").append(node.getDescription());
             }

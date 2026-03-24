@@ -437,10 +437,13 @@ class MindGraphServiceTest {
     @Test
     @DisplayName("[F-6b] ask: description 없는 노드는 확장에 포함되지 않음")
     void ask_queryExpansion_description없으면_원본유지() {
-        // given: "Redis" 키워드 → description 없음
+        // given: "Redis" 키워드 → exact + semantic 모두 없음
         when(chatLanguageModel.generate(anyString())).thenReturn("[\"Redis\"]");
         when(ragChatLanguageModel.generate(anyString())).thenReturn("답변");
         when(nodeRepository.findByNameIn(List.of("Redis"))).thenReturn(List.of());
+        // semantic fallback도 없음
+        when(nodeRepository.findSimilarByNameEmbedding(anyString(), anyDouble(), anyInt()))
+                .thenReturn(List.of());
         when(searchService.search(anyString())).thenReturn(List.of());
         when(edgeRepository.findEdgesByNodeNamesIn(anyList())).thenReturn(List.of());
 
@@ -451,6 +454,29 @@ class MindGraphServiceTest {
         ArgumentCaptor<String> queryCaptor = ArgumentCaptor.forClass(String.class);
         verify(searchService).search(queryCaptor.capture());
         assertThat(queryCaptor.getValue()).isEqualTo("Redis란?");
+    }
+
+    @Test
+    @DisplayName("[F-6b] ask: exact match 실패 시 semantic fallback으로 노드 description 확장")
+    void ask_queryExpansion_semantic_fallback() {
+        // given: "도커" 키워드 → exact miss → semantic으로 "Docker" 노드 찾음
+        Node docker = buildNodeWithId(1L, "Docker", "Technology");
+        docker.setDescription("컨테이너 가상화 기술");
+        when(chatLanguageModel.generate(anyString())).thenReturn("[\"도커\"]");
+        when(ragChatLanguageModel.generate(anyString())).thenReturn("답변");
+        when(nodeRepository.findByNameIn(List.of("도커"))).thenReturn(List.of()); // exact miss
+        when(nodeRepository.findSimilarByNameEmbedding(anyString(), anyDouble(), anyInt()))
+                .thenReturn(List.of(docker)); // semantic hit
+        when(searchService.search(anyString())).thenReturn(List.of());
+        when(edgeRepository.findEdgesByNodeNamesIn(anyList())).thenReturn(List.of());
+
+        // when
+        mindGraphService.ask("도커란?");
+
+        // then: semantic으로 찾은 Docker description이 확장에 포함
+        ArgumentCaptor<String> queryCaptor = ArgumentCaptor.forClass(String.class);
+        verify(searchService).search(queryCaptor.capture());
+        assertThat(queryCaptor.getValue()).contains("컨테이너 가상화 기술");
     }
 
     // ==================== getInsights 관련 테스트 ====================

@@ -121,7 +121,7 @@ public class GraphService {
                     }
                 } else {
                     // 후보 탐지 — 유사하지만 자동 병합하기엔 불확실
-                    log.info("Merge candidate: '{}' ≈ '{}' (similarity={:.3f}, threshold={})",
+                    log.info("Merge candidate: '{}' ≈ '{}' (similarity={}, threshold={})",
                             nodeDTO.name(), existingName, similarity, mergeThreshold);
                 }
             }
