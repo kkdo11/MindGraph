@@ -35,6 +35,8 @@ dependencies {
 	compileOnly 'org.projectlombok:lombok'
 	annotationProcessor 'org.projectlombok:lombok'
 	testImplementation 'org.springframework.boot:spring-boot-starter-test'
+	testImplementation 'com.h2database:h2'  // @DataJpaTest용 In-Memory DB
+	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'  // Gradle 9.x 요구사항
 
 	// ✨ LangChain4j 핵심 및 Ollama 연동 추가
 	implementation 'dev.langchain4j:langchain4j-spring-boot-starter:0.31.0'

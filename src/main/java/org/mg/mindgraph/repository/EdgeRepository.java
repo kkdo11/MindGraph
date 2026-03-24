@@ -11,6 +11,12 @@ public interface EdgeRepository extends JpaRepository<Edge, Long> {
 
     boolean existsBySourceIdAndTargetIdAndRelation(Long sourceId, Long targetId, String relation);
 
+    void deleteBySourceIdOrTargetId(Long sourceId, Long targetId);
+
+    // UI 전체 그래프 로드용 — JOIN FETCH로 N+1 방지
+    @Query("SELECT e FROM Edge e JOIN FETCH e.source JOIN FETCH e.target")
+    List<Edge> findAllWithNodes();
+
     // [최적화 핵심] JOIN FETCH를 사용하여 N+1 문제를 원천 차단합니다.
     @Query("SELECT e FROM Edge e " +
             "JOIN FETCH e.source s " +
