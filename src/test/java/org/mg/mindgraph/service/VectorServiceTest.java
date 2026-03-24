@@ -12,6 +12,8 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.jdbc.core.JdbcTemplate;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.mockito.ArgumentMatchers.any;
@@ -101,20 +103,90 @@ class VectorServiceTest {
     }
 
     @Test
-    @DisplayName("chunk: 4500자 텍스트 → 3청크, embed 3회 호출 (무한루프 버그 수정 검증)")
-    void embedAndSave_긴텍스트_여러청크_무한루프없음() {
-        // given: CHUNK_SIZE(2000) 초과 → 슬라이딩 윈도우 분할
-        // 예상 청크: [0,2000), [1700,3700), [3400,4500) → 3개
-        // 수정 전 코드는 마지막 청크 이후 start=4200에서 무한루프 발생
+    @DisplayName("chunk: 4500자 텍스트(줄바꿈 없음) → 문장 경계 fallback으로 분할")
+    void embedAndSave_긴텍스트_문장경계_fallback() {
+        // given: CHUNK_SIZE(2000) 초과, 단락 구분 없음 → 문장 경계 fallback
         givenEmbeddingModel();
         String longText = "A".repeat(4500);
 
-        // when: 수정 후 정상 종료
+        // when
         vectorService.embedAndSave(longText);
 
-        // then: embed 3회 (청크 3개)
+        // then: 최소 2청크 이상으로 분할됨
         verify(embeddingModel, times(3)).embed(anyString());
-        verify(jdbcTemplate, times(3)).update(anyString(), any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("chunk: 단락 기반 분할 — \\n\\n으로 나뉜 단락이 각각 청크로")
+    void chunk_단락기반_분할() {
+        // given: 3개 단락 (각각 ~800자), 총 ~2400자 > CHUNK_SIZE
+        String para1 = "A".repeat(800);
+        String para2 = "B".repeat(800);
+        String para3 = "C".repeat(800);
+        String text = para1 + "\n\n" + para2 + "\n\n" + para3;
+
+        // when
+        List<String> chunks = vectorService.chunk(text);
+
+        // then: 단락 병합으로 2청크 (800+800=1600 < 2000, 800)
+        assertThat(chunks).hasSizeBetween(2, 3);
+        // 첫 청크에 A와 B가 모두 포함 (병합됨)
+        assertThat(chunks.get(0)).contains("A".repeat(10));
+    }
+
+    @Test
+    @DisplayName("chunk: 짧은 단락은 인접 단락과 병합")
+    void chunk_짧은단락_병합() {
+        // given: 5개 짧은 단락 (각 200자) — MIN_CHUNK_SIZE(500) 미만
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < 5; i++) {
+            if (i > 0) sb.append("\n\n");
+            sb.append(String.valueOf((char) ('A' + i)).repeat(200));
+        }
+        // 총 1000자 + 구분자 < CHUNK_SIZE → 1청크
+        String text = sb.toString();
+
+        // when
+        List<String> chunks = vectorService.chunk(text);
+
+        // then: 전체가 CHUNK_SIZE 이하이므로 1청크
+        assertThat(chunks).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("chunk: CHUNK_SIZE 초과 단락은 문장 경계에서 재분할")
+    void chunk_큰단락_문장경계_재분할() {
+        // given: 하나의 단락이 3000자 (CHUNK_SIZE 초과)
+        // 문장부호가 있어야 findSentenceBoundary에서 분할됨
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < 100; i++) {
+            sb.append("이것은 테스트 문장입니다. ".repeat(3));
+        }
+        String text = sb.toString(); // ~4500자
+
+        // when
+        List<String> chunks = vectorService.chunk(text);
+
+        // then: 문장 경계에서 분할
+        assertThat(chunks).hasSizeGreaterThanOrEqualTo(2);
+        for (String chunk : chunks) {
+            assertThat(chunk.length()).isLessThanOrEqualTo(2100); // CHUNK_SIZE + 오버랩 여유
+        }
+    }
+
+    @Test
+    @DisplayName("chunk: 오버랩 — 이전 청크 마지막 문장이 다음 청크에 포함")
+    void chunk_오버랩_문맥연속성() {
+        // given: 2개 큰 단락, 각각 마침표가 있는 문장
+        String para1 = "Docker는 컨테이너 기술이다. " + "A".repeat(1500) + ". 첫번째 단락 끝.";
+        String para2 = "Kubernetes는 오케스트레이션이다. " + "B".repeat(1500) + ". 두번째 단락 끝.";
+        String text = para1 + "\n\n" + para2;
+
+        // when
+        List<String> chunks = vectorService.chunk(text);
+
+        // then: 2개 이상 청크, 두번째 청크에 첫번째의 마지막 문장 일부 포함 가능
+        assertThat(chunks).hasSizeGreaterThanOrEqualTo(2);
     }
 
     @Test

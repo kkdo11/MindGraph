@@ -13,6 +13,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import org.springframework.beans.factory.annotation.Value;
+
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -28,6 +30,12 @@ public class GraphService {
     private final Neo4jClient neo4jClient;
     private final EmbeddingModel embeddingModel;
     private final JdbcTemplate jdbcTemplate;
+
+    @Value("${mindgraph.node.merge-threshold:0.95}")
+    private double mergeThreshold;
+
+    @Value("${mindgraph.node.candidate-threshold:0.80}")
+    private double candidateThreshold;
 
 
     /**
@@ -59,25 +67,8 @@ public class GraphService {
             // [P0-3] name 기준으로 먼저 찾아 같은 이름의 노드가 type만 다르게 중복 생성되는 문제 방지
             // (기존: findByNameAndType → "Docker"/Technology 와 "Docker"/Database 가 별개 노드로 분열)
             Node node = nodeRepository.findFirstByName(nodeDTO.name())
-                    .map(existing -> {
-                        boolean hasNewDesc = nodeDTO.description() != null && !nodeDTO.description().isBlank();
-                        boolean missingDesc = existing.getDescription() == null || existing.getDescription().isBlank();
-                        // [P2-1] 새 description이 기존보다 길면 교체 (길이 = 정보량의 근사치)
-                        boolean newIsRicher = hasNewDesc && !missingDesc
-                                && nodeDTO.description().length() > existing.getDescription().length();
-                        if (hasNewDesc && (missingDesc || newIsRicher)) {
-                            existing.setDescription(nodeDTO.description());
-                            return nodeRepository.save(existing);
-                        }
-                        return existing;
-                    })
-                    .orElseGet(() -> nodeRepository.save(
-                            Node.builder()
-                                    .name(nodeDTO.name())
-                                    .type(nodeDTO.type())
-                                    .description(nodeDTO.description())
-                                    .build()
-                    ));
+                    .map(existing -> updateDescriptionIfRicher(existing, nodeDTO))
+                    .orElseGet(() -> findOrCreateByEmbedding(nodeDTO));
 
             // 이름 임베딩 저장 — 독립 try-catch: 실패해도 JPA 트랜잭션 보장
             saveNameEmbedding(node.getId(), node.getName());
@@ -86,6 +77,66 @@ public class GraphService {
             nodeMap.put(nodeDTO.name(), node);
         }
         return nodeMap;
+    }
+
+    /**
+     * description이 더 풍부한 경우에만 기존 노드를 업데이트합니다.
+     */
+    private Node updateDescriptionIfRicher(Node existing, GraphData.NodeDTO nodeDTO) {
+        boolean hasNewDesc = nodeDTO.description() != null && !nodeDTO.description().isBlank();
+        boolean missingDesc = existing.getDescription() == null || existing.getDescription().isBlank();
+        boolean newIsRicher = hasNewDesc && !missingDesc
+                && nodeDTO.description().length() > existing.getDescription().length();
+        if (hasNewDesc && (missingDesc || newIsRicher)) {
+            existing.setDescription(nodeDTO.description());
+            return nodeRepository.save(existing);
+        }
+        return existing;
+    }
+
+    /**
+     * [F-3] exact name match 실패 시 임베딩 유사도로 기존 노드를 찾습니다.
+     * - 0.95 이상: 자동 병합 (대소문자, 한/영 표기 차이)
+     * - 0.80~0.95: 병합 후보로 로그 기록
+     * - 0.80 미만 or 검색 실패: 새 노드 생성
+     */
+    private Node findOrCreateByEmbedding(GraphData.NodeDTO nodeDTO) {
+        try {
+            String vec = embeddingModel.embed(nodeDTO.name()).content().vectorAsList().toString();
+            List<Object[]> similar = nodeRepository.findSimilarWithScore(vec, candidateThreshold, 1);
+
+            if (!similar.isEmpty()) {
+                Object[] row = similar.get(0);
+                Long id = ((Number) row[0]).longValue();
+                String existingName = (String) row[1];
+                double similarity = ((Number) row[2]).doubleValue();
+
+                if (similarity >= mergeThreshold) {
+                    // 자동 병합 — 거의 같은 단어의 표기 차이
+                    Node existing = nodeRepository.findById(id).orElse(null);
+                    if (existing != null) {
+                        log.info("Node '{}' merged into existing '{}' (similarity={})",
+                                nodeDTO.name(), existingName, similarity);
+                        return updateDescriptionIfRicher(existing, nodeDTO);
+                    }
+                } else {
+                    // 후보 탐지 — 유사하지만 자동 병합하기엔 불확실
+                    log.info("Merge candidate: '{}' ≈ '{}' (similarity={:.3f}, threshold={})",
+                            nodeDTO.name(), existingName, similarity, mergeThreshold);
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Embedding similarity search failed for '{}': {}", nodeDTO.name(), e.getMessage());
+        }
+
+        // 새 노드 생성
+        return nodeRepository.save(
+                Node.builder()
+                        .name(nodeDTO.name())
+                        .type(nodeDTO.type())
+                        .description(nodeDTO.description())
+                        .build()
+        );
     }
 
     /**

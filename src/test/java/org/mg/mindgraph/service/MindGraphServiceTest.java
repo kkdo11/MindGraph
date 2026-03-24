@@ -83,6 +83,8 @@ class MindGraphServiceTest {
         // 기존 호환: findSimilarByNameEmbedding stub 유지
         lenient().when(nodeRepository.findSimilarByNameEmbedding(anyString(), anyDouble(), anyInt()))
                 .thenReturn(List.of());
+        // [F-6b] expandQuery에서 노드 description 조회 기본 stub
+        lenient().when(nodeRepository.findByNameIn(anyList())).thenReturn(List.of());
     }
 
     // 테스트용 Node 빌더 헬퍼
@@ -402,10 +404,53 @@ class MindGraphServiceTest {
         // when
         mindGraphService.ask("Docker란?");
 
-        // then: 언어 불일치에도 유사도 검색으로 "도커" 노드 탐색 + score 반환
-        verify(nodeRepository, never()).findByNameIn(anyList());
+        // then: 그래프 검색은 findSimilarWithScore 사용 (findByNameIn이 아닌 임베딩 유사도)
         verify(nodeRepository, atLeast(1)).findSimilarWithScore(anyString(), anyDouble(), anyInt());
         verify(embeddingModel, atLeast(1)).embed(anyString());
+    }
+
+    // ==================== [F-6b] Query Expansion ====================
+
+    @Test
+    @DisplayName("[F-6b] ask: 키워드 노드 description이 벡터 검색 질문에 확장됨")
+    void ask_queryExpansion_description_확장() {
+        // given: "Docker" 키워드 → 노드 description "컨테이너 가상화 기술"
+        Node docker = buildNodeWithId(1L, "Docker", "Technology");
+        docker.setDescription("컨테이너 가상화 기술");
+        when(chatLanguageModel.generate(anyString())).thenReturn("[\"Docker\"]");
+        when(ragChatLanguageModel.generate(anyString())).thenReturn("답변");
+        when(nodeRepository.findByNameIn(List.of("Docker"))).thenReturn(List.of(docker));
+        when(searchService.search(anyString())).thenReturn(List.of());
+        when(edgeRepository.findEdgesByNodeNamesIn(anyList())).thenReturn(List.of());
+
+        // when
+        mindGraphService.ask("Docker란?");
+
+        // then: searchService.search()에 확장된 질문이 전달됨
+        ArgumentCaptor<String> queryCaptor = ArgumentCaptor.forClass(String.class);
+        verify(searchService).search(queryCaptor.capture());
+        String expandedQuery = queryCaptor.getValue();
+        assertThat(expandedQuery).contains("Docker란?");
+        assertThat(expandedQuery).contains("컨테이너 가상화 기술");
+    }
+
+    @Test
+    @DisplayName("[F-6b] ask: description 없는 노드는 확장에 포함되지 않음")
+    void ask_queryExpansion_description없으면_원본유지() {
+        // given: "Redis" 키워드 → description 없음
+        when(chatLanguageModel.generate(anyString())).thenReturn("[\"Redis\"]");
+        when(ragChatLanguageModel.generate(anyString())).thenReturn("답변");
+        when(nodeRepository.findByNameIn(List.of("Redis"))).thenReturn(List.of());
+        when(searchService.search(anyString())).thenReturn(List.of());
+        when(edgeRepository.findEdgesByNodeNamesIn(anyList())).thenReturn(List.of());
+
+        // when
+        mindGraphService.ask("Redis란?");
+
+        // then: 원본 질문 그대로 전달
+        ArgumentCaptor<String> queryCaptor = ArgumentCaptor.forClass(String.class);
+        verify(searchService).search(queryCaptor.capture());
+        assertThat(queryCaptor.getValue()).isEqualTo("Redis란?");
     }
 
     // ==================== getInsights 관련 테스트 ====================

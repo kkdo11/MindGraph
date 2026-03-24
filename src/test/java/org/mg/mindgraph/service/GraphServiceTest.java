@@ -18,7 +18,9 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.neo4j.core.Neo4jClient;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.util.ReflectionTestUtils;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -67,6 +69,12 @@ class GraphServiceTest {
         // [D-1] 이름 임베딩 기본 stub
         lenient().when(embeddingModel.embed(anyString()))
                 .thenReturn(Response.from(Embedding.from(SAMPLE_VECTOR)));
+        // [F-3] 임베딩 유사도 검색 기본 stub — 유사 노드 없음
+        lenient().when(nodeRepository.findSimilarWithScore(anyString(), anyDouble(), anyInt()))
+                .thenReturn(List.of());
+        // [F-3] @Value 필드 주입
+        ReflectionTestUtils.setField(graphService, "mergeThreshold", 0.95);
+        ReflectionTestUtils.setField(graphService, "candidateThreshold", 0.80);
     }
 
     private Node buildNode(String name, String type) {
@@ -413,6 +421,57 @@ class GraphServiceTest {
         assertThat(result).isEmpty();
     }
 
+    // ==================== [F-3] 노드 이름 정규화 ====================
+
+    @Test
+    @DisplayName("[F-3] saveGraph: exact match 실패 + 유사도 0.95 이상 → 자동 병합")
+    void saveGraph_유사도_높으면_자동병합() {
+        // given: "도커" exact match 실패, 임베딩 유사도 0.97로 "Docker" 발견
+        Node existingDocker = Node.builder().name("Docker").type("Technology").description("컨테이너").build();
+        java.lang.reflect.Field idField;
+        try {
+            idField = Node.class.getDeclaredField("id");
+            idField.setAccessible(true);
+            idField.set(existingDocker, 1L);
+        } catch (Exception e) { throw new RuntimeException(e); }
+
+        GraphData data = new GraphData(
+                List.of(new GraphData.NodeDTO("도커", "Technology", null)),
+                List.of()
+        );
+        when(nodeRepository.findFirstByName("도커")).thenReturn(Optional.empty());
+        when(nodeRepository.findSimilarWithScore(anyString(), anyDouble(), anyInt()))
+                .thenReturn(List.<Object[]>of(new Object[]{1L, "Docker", 0.97}));
+        when(nodeRepository.findById(1L)).thenReturn(Optional.of(existingDocker));
+
+        // when
+        graphService.saveGraph(data);
+
+        // then: 새 노드 생성 없이 기존 Docker 재사용
+        verify(nodeRepository, never()).save(any(Node.class));
+    }
+
+    @Test
+    @DisplayName("[F-3] saveGraph: exact match 실패 + 유사도 0.85 → 후보 로그만 (새 노드 생성)")
+    void saveGraph_유사도_중간이면_후보로그_새노드생성() {
+        // given: "도커" → "Docker" 유사도 0.85 (mergeThreshold=0.95 미만)
+        GraphData data = new GraphData(
+                List.of(new GraphData.NodeDTO("도커", "Technology", null)),
+                List.of()
+        );
+        Node newNode = buildNode("도커", "Technology");
+        when(nodeRepository.findFirstByName("도커")).thenReturn(Optional.empty());
+        when(nodeRepository.findSimilarWithScore(anyString(), anyDouble(), anyInt()))
+                .thenReturn(List.<Object[]>of(new Object[]{1L, "Docker", 0.85}));
+        when(nodeRepository.save(any(Node.class))).thenReturn(newNode);
+
+        // when
+        graphService.saveGraph(data);
+
+        // then: 새 노드 생성 (병합 안 됨)
+        verify(nodeRepository).save(any(Node.class));
+    }
+
     // ==================== [D-1] 이름 임베딩 ====================
 
     @Test
@@ -430,8 +489,8 @@ class GraphServiceTest {
         // when
         graphService.saveGraph(data);
 
-        // then: embeddingModel.embed() 호출 확인
-        verify(embeddingModel).embed("도커");
+        // then: embeddingModel.embed() 호출 (findOrCreateByEmbedding + saveNameEmbedding)
+        verify(embeddingModel, atLeast(1)).embed("도커");
         // jdbcTemplate.update() varargs — any(Object[].class)로 매처
         verify(jdbcTemplate).update(
                 argThat(sql -> sql.contains("name_embedding")),

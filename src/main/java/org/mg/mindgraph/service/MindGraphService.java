@@ -98,14 +98,22 @@ public class MindGraphService {
     public String ask(String question) {
         log.info("Processing question: {}", question);
 
-        // Task 1: 벡터 검색 (병렬)
+        // [F-6b] 키워드 추출 (1회) — 벡터 검색 확장 + 그래프 검색 양쪽에 재사용
+        List<String> keywords = extractKeywords(question);
+
+        // [F-6b] Query Expansion — 키워드로 찾은 노드 description을 질문에 concat
+        String expandedQuestion = expandQuery(question, keywords);
+        log.debug("Query expanded: '{}' → '{}'", question,
+                expandedQuestion.length() > 200 ? expandedQuestion.substring(0, 200) + "..." : expandedQuestion);
+
+        // Task 1: 벡터 검색 — 확장된 질문으로 (병렬)
         CompletableFuture<List<SearchResult>> vectorFuture = CompletableFuture.supplyAsync(() ->
-                searchService.search(question)
+                searchService.search(expandedQuestion)
         );
 
-        // Task 2: 그래프 검색 → RankedContext 리스트 반환 (병렬)
+        // Task 2: 그래프 검색 — 이미 추출된 키워드 재사용 (병렬)
         CompletableFuture<List<RankedContext>> graphFuture = CompletableFuture.supplyAsync(() ->
-                searchGraphRanked(question)
+                searchGraphRankedWithKeywords(question, keywords)
         );
 
         List<SearchResult> vectorResults = vectorFuture.join();
@@ -125,7 +133,10 @@ public class MindGraphService {
      * 노드 유사도를 기반으로 동적 점수를 부여합니다 (기존 고정 0.7/0.6/0.4 제거).
      */
     private List<RankedContext> searchGraphRanked(String question) {
-        List<String> keywords = extractKeywords(question);
+        return searchGraphRankedWithKeywords(question, extractKeywords(question));
+    }
+
+    private List<RankedContext> searchGraphRankedWithKeywords(String question, List<String> keywords) {
         if (keywords.isEmpty()) return List.of();
 
         // 키워드 분류: 엔티티 vs 연도
@@ -179,6 +190,34 @@ public class MindGraphService {
         }
 
         return results;
+    }
+
+    /**
+     * [F-6b] 키워드로 찾은 노드의 description을 질문에 concat하여 벡터 검색 재현율을 높입니다.
+     * LLM 추가 호출 없이 기존 DB 데이터만 활용합니다.
+     *
+     * <p>예: "Docker란?" → "Docker란? Docker: 컨테이너 가상화 기술..."
+     * 짧은 질문과 긴 청크 사이의 구조적 유사도 저하(#10)를 완화합니다.
+     */
+    private String expandQuery(String question, List<String> keywords) {
+        if (keywords.isEmpty()) return question;
+
+        List<String> entityKeywords = keywords.stream().filter(k -> !k.matches("\\d{4}")).toList();
+        List<Node> nodes = nodeRepository.findByNameIn(entityKeywords);
+
+        StringBuilder expansion = new StringBuilder(question);
+        for (Node node : nodes) {
+            if (node.getDescription() != null && !node.getDescription().isBlank()) {
+                expansion.append(" ").append(node.getName()).append(": ").append(node.getDescription());
+            }
+        }
+
+        // 확장된 질문이 너무 길면 임베딩 품질 저하 — 1000자 제한
+        String expanded = expansion.toString();
+        if (expanded.length() > 1000) {
+            expanded = expanded.substring(0, 1000);
+        }
+        return expanded;
     }
 
     /**
