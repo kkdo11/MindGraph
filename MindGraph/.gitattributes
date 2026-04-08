@@ -1,0 +1,16 @@
+# 모든 텍스트 파일은 저장소에 LF로 저장
+* text=auto
+
+# Java 및 소스 코드는 명시적으로 텍스트로 취급
+*.java text
+*.gradle text
+*.properties text
+*.md text
+*.yml text
+*.xml text
+
+# ⚠️ 중요: 리눅스 쉘 스크립트는 반드시 LF여야 함 (WSL/Docker에서 실행 에러 방지)
+gradlew text eol=lf
+
+# 윈도우 배치 파일은 CRLF여야 함
+*.bat text eol=crlf

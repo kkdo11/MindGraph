@@ -1,0 +1,61 @@
+version: '3.8'
+
+services:
+  # 1. PostgreSQL + pgvector (데이터베이스)
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: mindgraph-db
+    environment:
+      POSTGRES_USER: mindgraph_user
+      POSTGRES_PASSWORD: mindgraph_password
+      POSTGRES_DB: mindgraph_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mindgraph_user -d mindgraph_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # 2. Ollama (LLM 추론 엔진)
+  ollama:
+    image: ollama/ollama:latest
+    container_name: mindgraph-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./data/ollama:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # 3. RabbitMQ (메시지 큐)
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: mindgraph-rabbitmq
+    ports:
+      - "5672:5672" # AMQP port
+      - "15672:15672" # Management UI
+    volumes:
+      - ./data/rabbitmq:/var/lib/rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+
+  # 4. Neo4j (그래프 데이터베이스)
+  neo4j:
+    image: neo4j:latest
+    container_name: mindgraph-neo4j
+    ports:
+      - "7474:7474" # HTTP
+      - "7687:7687" # Bolt
+    volumes:
+      - ./data/neo4j:/data
+    environment:
+      NEO4J_AUTH: neo4j/password # neo4j/사용할_비밀번호

@@ -1,0 +1,5 @@
+### 지식 추출 테스트
+POST http://localhost:8080/api/graph/extract
+Content-Type: text/plain
+
+스파이더맨의 본명은 피터 파커이다. 그는 거미에 물린 후 초능력을 얻게 되었다.
